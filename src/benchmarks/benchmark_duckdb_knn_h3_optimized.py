@@ -243,7 +243,7 @@ def run_optimized_knn_query(con, k_ring_size, max_distance_m, k=5):
     Run optimized KNN query with H3 + spatial bounds filtering
     """
     print(f"[7/9] Running optimized KNN query (K={k})...")
-    print("  Strategy: H3 k-ring=1 + spatial bounds filter")
+    print(f"  Strategy: H3 k-ring={k_ring_size} + spatial bounds filter")
     print()
 
     start = time.time()
