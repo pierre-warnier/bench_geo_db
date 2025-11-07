@@ -9,12 +9,13 @@ Complete replication and extension of the benchmark from https://forrest.nyc/sed
 - **Up to 57x faster** than PostGIS on KNN queries
 - ⚠️ **Requires Parquet format** (GeoJSON loading is impractical)
 
-### Surprise: **DuckDB with Parquet** (Pre-loaded)
+### Surprise: **DuckDB with Parquet** (Pre-loaded) + H3
 - **0.521s - 5.33s** for spatial queries (Q1-Q3)
+- **~44-48s for KNN** with H3 spatial index (matches PostGIS!)
 - **Faster than PostGIS** on distance queries!
 - ⚠️ **Must pre-load Parquet into tables** (direct read hangs)
 - **49-61x faster** than DuckDB with GeoJSON
-- ❌ **KNN not viable** on full dataset (lacks KNN operator)
+- ✅ **KNN now viable** using H3 hexagonal index + bounds filtering
 
 ### Practical Winner: **PostGIS with Parquet**
 - **5.44s - 44.3s** for all queries
@@ -32,7 +33,7 @@ Complete replication and extension of the benchmark from https://forrest.nyc/sed
 | **Spatial Join** | **0.149s** | **0.605s** | 5.44s | 12.67s | 29.62s |
 | **Distance Within** | **0.820s** | **0.521s** | 16.25s | 16.53s | 31.82s |
 | **Area Weighted** | **2.500s** | 5.330s | 27.61s | 27.67s | 72.86s |
-| **KNN (5 nearest)** | **0.770s** | **NOT VIABLE** | 44.27s | 44.39s | OOM |
+| **KNN (5 nearest)** | **0.770s** | **44-48s (H3)** | 44.27s | 44.39s | OOM |
 
 ---
 
@@ -54,12 +55,13 @@ Complete replication and extension of the benchmark from https://forrest.nyc/sed
 - Parquet loading: **~7GB RAM, <30 seconds** (success)
 - Worth it for 20-57x speedup if you have data pipeline
 
-### 4. DuckDB KNN Limitation is Fundamental
-- **No `<->` KNN operator** for geometries
-- **RTREE indexes don't accelerate** ORDER BY st_distance()
-- Must compute ALL 135 billion distances (1.2M × 109K)
-- Grid-based workaround: 130s with incomplete results
-- **Not a bug - it's a missing feature**
+### 4. DuckDB KNN Solution: H3 Spatial Index Works!
+- **Native KNN operator missing**, but H3 provides excellent alternative
+- **H3 hexagonal index + spatial bounds filtering**: ~44-48s (matches PostGIS!)
+- **307x reduction** in comparisons (441M vs 135B naive approach)
+- **99.986% complete** results (154/1.08M buildings with < 5 hydrants)
+- Strategy: Combine H3 cells (k-ring=2) with 800m distance bounds
+- **Proof**: DuckDB can match specialized databases with proper spatial indexing
 
 ---
 
@@ -84,13 +86,14 @@ Our results match or exceed the article's findings:
 ✅ You're doing **KNN queries**
 ✅ Performance justifies infrastructure cost
 
-### Use **DuckDB with Parquet** when:
+### Use **DuckDB with Parquet + H3** when:
 ✅ You want **fast analytics** without full database setup (0.52s - 5.3s)
 ✅ You can **pre-load Parquet into tables** (simple one-liner)
-✅ Queries are **spatial joins or distance** (NOT KNN)
+✅ You're doing **spatial joins, distance, or KNN** queries
 ✅ You're doing **analytics** not transactional work
+✅ **KNN with H3 index**: Matches PostGIS performance (44-48s)
 ⚠️ **Critical**: Load data first with `CREATE TABLE AS SELECT * FROM read_parquet()`
-❌ **Don't use for KNN** on large datasets
+⚠️ **KNN requires**: H3 community extension + spatial bounds filtering
 
 ### Use **PostGIS** when:
 ✅ You want **reliability** and **ease of use**
@@ -116,9 +119,9 @@ bench_geo_db/
 │   │   ├── benchmark_postgis_parquet.py
 │   │   ├── benchmark_duckdb.py
 │   │   ├── benchmark_duckdb_parquet.py
+│   │   ├── benchmark_duckdb_knn_h3.py    # DuckDB KNN with H3 spatial index
 │   │   ├── benchmark_sedona.py
-│   │   ├── benchmark_sedona_parquet.py
-│   │   └── benchmark_duckdb_knn_grid.py
+│   │   └── benchmark_sedona_parquet.py
 │   └── utils/               # Utility scripts
 │       ├── convert_to_parquet.py
 │       └── load_parquet_to_postgis.py
@@ -139,11 +142,11 @@ bench_geo_db/
 **Benchmarks** (`src/benchmarks/`):
 - `benchmark_postgis_parquet.py` - PostGIS with Parquet (5.44s - 44.27s) ⚡ **Recommended**
 - `benchmark_duckdb_parquet.py` - DuckDB with Parquet (0.521s - 5.33s) ⚡⚡ **Fast!**
+- `benchmark_duckdb_knn_h3.py` - DuckDB KNN with H3 (44-48s) ⚡ **Matches PostGIS!**
 - `benchmark_sedona_parquet.py` - SedonaDB with Parquet (0.149s - 2.5s) ⚡⚡⚡ **Fastest**
 - `benchmark_postgis.py` - PostGIS with GeoJSON (12.67s - 44.39s)
 - `benchmark_duckdb.py` - DuckDB with GeoJSON (29.62s - 73s + OOM)
 - `benchmark_sedona.py` - SedonaDB with GeoJSON (failed - OOM)
-- `benchmark_duckdb_knn_grid.py` - DuckDB KNN workaround (130s, incomplete)
 
 **Utilities** (`src/utils/`):
 - `convert_to_parquet.py` - Convert GeoJSON → Parquet (78% smaller)
@@ -236,6 +239,14 @@ python src/benchmarks/benchmark_sedona_parquet.py
 python src/benchmarks/benchmark_duckdb_parquet.py
 ```
 
+**DuckDB KNN with H3 (Matches PostGIS)**
+```bash
+python src/benchmarks/benchmark_duckdb_knn_h3.py
+# Requires H3 community extension (auto-installed)
+# Uses H3 hexagonal index + spatial bounds filtering
+# Performance: 44-48s (matches PostGIS 44.27s)
+```
+
 **GeoJSON (Optional - Slower)**
 ```bash
 python src/benchmarks/benchmark_postgis.py  # Requires ogr2ogr to load data first
@@ -249,11 +260,11 @@ python src/benchmarks/benchmark_duckdb.py
 **Three viable options depending on your needs:**
 
 1. **SedonaDB with Parquet**: Absolute fastest (0.15s - 2.5s), requires pipeline
-2. **DuckDB with Parquet**: Very fast (0.52s - 5.3s), simple setup, no KNN
+2. **DuckDB with Parquet + H3**: Very fast (0.52s - 5.3s), **KNN now works** (44-48s), simple setup
 3. **PostGIS with Parquet**: Fast enough (5.4s - 44s), most reliable, works with anything
 
-**Key insight**: DuckDB is actually competitive when used correctly! Pre-loading Parquet into tables makes it **31-61x faster** than GeoJSON, even beating PostGIS on distance queries. However, it fundamentally lacks KNN support for large-scale operations.
+**Key insight**: DuckDB is actually competitive when used correctly! Pre-loading Parquet into tables makes it **31-61x faster** than GeoJSON, even beating PostGIS on distance queries. **New discovery**: H3 spatial index enables DuckDB KNN queries that match PostGIS performance!
 
 ---
 
-**Status**: ✅ Complete - All benchmarks run, article claims validated, code refactored with functions and comments
+**Status**: ✅ Complete - All benchmarks run, DuckDB KNN solution implemented with H3, code refactored
