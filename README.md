@@ -106,28 +106,48 @@ Our results match or exceed the article's findings:
 
 ---
 
-## Files
+## Project Structure
 
-### Benchmark Scripts (Refactored with Functions & Comments)
+```
+bench_geo_db/
+├── src/
+│   ├── benchmarks/          # Benchmark scripts (refactored with functions)
+│   │   ├── benchmark_postgis.py
+│   │   ├── benchmark_postgis_parquet.py
+│   │   ├── benchmark_duckdb.py
+│   │   ├── benchmark_duckdb_parquet.py
+│   │   ├── benchmark_sedona.py
+│   │   ├── benchmark_sedona_parquet.py
+│   │   └── benchmark_duckdb_knn_grid.py
+│   └── utils/               # Utility scripts
+│       ├── convert_to_parquet.py
+│       └── load_parquet_to_postgis.py
+├── docs/                    # Documentation
+│   ├── FINAL_RESULTS.md
+│   └── QUERY_COMPARABILITY.md
+├── data/                    # Data files (not in repo)
+│   ├── *.geojson           # Original NYC Open Data (933MB)
+│   └── *.parquet           # Optimized format (207MB)
+├── docker-compose.yml       # PostGIS Docker setup
+├── prepare_postgis.sql      # PostGIS initialization
+├── LICENSE                  # MIT License
+└── README.md               # This file
+```
+
+### Key Files
+
+**Benchmarks** (`src/benchmarks/`):
+- `benchmark_postgis_parquet.py` - PostGIS with Parquet (5.44s - 44.27s) ⚡ **Recommended**
+- `benchmark_duckdb_parquet.py` - DuckDB with Parquet (0.521s - 5.33s) ⚡⚡ **Fast!**
+- `benchmark_sedona_parquet.py` - SedonaDB with Parquet (0.149s - 2.5s) ⚡⚡⚡ **Fastest**
 - `benchmark_postgis.py` - PostGIS with GeoJSON (12.67s - 44.39s)
-- `benchmark_postgis_parquet.py` - PostGIS with Parquet (5.44s - 44.27s) ⚡
 - `benchmark_duckdb.py` - DuckDB with GeoJSON (29.62s - 73s + OOM)
-- `benchmark_duckdb_parquet.py` - DuckDB with Parquet pre-loaded (0.521s - 5.33s) ⚡⚡
 - `benchmark_sedona.py` - SedonaDB with GeoJSON (failed - OOM)
-- `benchmark_sedona_parquet.py` - SedonaDB with Parquet (0.149s - 2.5s) ⚡⚡⚡
-- `benchmark_duckdb_knn_grid.py` - DuckDB KNN workaround attempt (130s, incomplete)
+- `benchmark_duckdb_knn_grid.py` - DuckDB KNN workaround (130s, incomplete)
 
-### Setup & Data (Refactored with Functions & Comments)
-- `docker-compose.yml` - Minimal PostGIS setup
-- `convert_to_parquet.py` - GeoJSON → Parquet converter
+**Utilities** (`src/utils/`):
+- `convert_to_parquet.py` - Convert GeoJSON → Parquet (78% smaller)
 - `load_parquet_to_postgis.py` - Load Parquet into PostGIS with indexes
-- `data/*.geojson` - Original NYC Open Data (933MB)
-- `data/*.parquet` - Optimized format (207MB, 78% smaller)
-
-### Documentation
-- `FINAL_RESULTS.md` - Complete analysis and recommendations
-- `QUERY_COMPARABILITY.md` - Detailed query comparability analysis
-- `README.md` - This file
 
 ---
 
@@ -186,7 +206,7 @@ mkdir -p data
 
 ### 3. Convert to Parquet (Recommended)
 ```bash
-python convert_to_parquet.py
+python src/utils/convert_to_parquet.py
 # Converts GeoJSON → Parquet (78% smaller, 240x faster loading)
 ```
 
@@ -202,24 +222,24 @@ docker run --name bench_postgis -d \
 
 **PostGIS (Parquet - Recommended)**
 ```bash
-python load_parquet_to_postgis.py  # Load data + create indexes
-python benchmark_postgis_parquet.py
+python src/utils/load_parquet_to_postgis.py  # Load data + create indexes
+python src/benchmarks/benchmark_postgis_parquet.py
 ```
 
 **SedonaDB (Parquet Only)**
 ```bash
-python benchmark_sedona_parquet.py
+python src/benchmarks/benchmark_sedona_parquet.py
 ```
 
 **DuckDB (Parquet - Fast!)**
 ```bash
-python benchmark_duckdb_parquet.py
+python src/benchmarks/benchmark_duckdb_parquet.py
 ```
 
 **GeoJSON (Optional - Slower)**
 ```bash
-python benchmark_postgis.py  # Requires ogr2ogr to load data first
-python benchmark_duckdb.py
+python src/benchmarks/benchmark_postgis.py  # Requires ogr2ogr to load data first
+python src/benchmarks/benchmark_duckdb.py
 ```
 
 ---
