@@ -29,3 +29,7 @@ Thumbs.db
 # DuckDB
 *.duckdb
 *.duckdb.wal
+
+# Temporary and external
+.tmp/
+postgis-duckdb-sedonadb-comparison/
