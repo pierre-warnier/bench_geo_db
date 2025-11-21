@@ -155,7 +155,7 @@ def main():
                 ) / ST_Area(ST_Transform(c.geometry, '3857'))
             )
         ) as pop
-    FROM census_db c
+    FROM census_blocks_db c
     JOIN buildings_db b
         ON ST_Intersects(c.geometry, b.geometry)
     GROUP BY b.bin

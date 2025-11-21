@@ -104,6 +104,7 @@ def main():
     # Query 2: Distance Within (200m)
     # Count buildings within 200m of each hydrant
     # Requires transform to EPSG:3857 (Web Mercator) for metric distances
+    # FIX: Use always_xy := true to correct axis order (GitHub issue #474)
     query2 = """
     SELECT
         COUNT(a.bin) as building_count,
@@ -111,8 +112,8 @@ def main():
     FROM buildings a
     JOIN hydrants b
         ON st_dwithin(
-            st_transform(a.geometry, 'EPSG:4326', 'EPSG:3857'),
-            st_transform(b.geometry, 'EPSG:4326', 'EPSG:3857'),
+            st_transform(a.geometry, 'EPSG:4326', 'EPSG:3857', always_xy := true),
+            st_transform(b.geometry, 'EPSG:4326', 'EPSG:3857', always_xy := true),
             200)
     GROUP BY b.unitid
     """

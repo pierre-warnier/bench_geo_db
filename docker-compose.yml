@@ -18,5 +18,40 @@ services:
       timeout: 5s
       retries: 5
 
+  heavydb:
+    image: heavyai/core-os-cuda
+    container_name: bench_heavydb
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    ports:
+      - "6274:6274"  # Thrift binary protocol
+      - "6273:6273"  # Thrift HTTP protocol
+      - "9092:9092"  # Web UI
+    volumes:
+      - heavydb_data:/var/lib/heavyai
+      - heavydb_data:/heavyai-storage
+    command: |
+      /bin/bash -c "
+      /heavyai/startheaveai \
+        --non-interactive \
+        --data /heavyai-storage/data \
+        --config /heavyai-storage/heavyai.conf \
+        --enable-runtime-udf
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6273/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
 volumes:
   postgis_data:
+  heavydb_data:

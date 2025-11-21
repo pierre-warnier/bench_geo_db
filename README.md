@@ -1,111 +1,115 @@
-# Geospatial Database Benchmark: SedonaDB vs DuckDB vs PostGIS
+# Geospatial Database Benchmark: HeavyDB vs SedonaDB vs DuckDB vs PostGIS
 
 Complete replication and extension of the benchmark from https://forrest.nyc/sedonadb-vs-duckdb-vs-postgis-which-spatial-sql-engine-is-fastest/
 
+**Extended with GPU-accelerated HeavyDB benchmarks**
+
 ## Quick Results Summary
 
-### Performance Winner: **SedonaDB** (with Parquet)
-- **0.149s - 2.5s** for all queries
-- **Up to 57x faster** than PostGIS on KNN queries
-- ⚠️ **Requires Parquet format** (GeoJSON loading is impractical)
+### Performance Winner: **HeavyDB (GPU)**
+- **0.166s - 0.537s** for all queries
+- **40-930x faster** than PostGIS
+- Requires NVIDIA GPU + grid-based equijoin technique
 
-### Surprise: **DuckDB with Parquet** (Pre-loaded) + H3
-- **0.521s - 5.33s** for spatial queries (Q1-Q3)
-- **~44-48s for KNN** with H3 spatial index (matches PostGIS!)
-- **Faster than PostGIS** on distance queries!
-- ⚠️ **Must pre-load Parquet into tables** (direct read hangs)
-- **49-61x faster** than DuckDB with GeoJSON
-- ✅ **KNN now viable** using H3 hexagonal index + bounds filtering
+### Best Without GPU: **SedonaDB** (with Parquet)
+- **0.220s - 6.7s** for all queries
+- **15-36x faster** than PostGIS
+- Excellent native ST_KNN support
 
-### Practical Winner: **PostGIS with Parquet**
-- **5.44s - 44.3s** for all queries
-- **2.3x faster than PostGIS with GeoJSON** on spatial joins
-- Works with any format
-- Easy setup
-- Full KNN support
+### Analytical Workloads: **DuckDB** (with Parquet)
+- **0.9s - 9.7s** for Q1-Q3
+- **6-25x faster** than PostGIS on supported queries
+- KNN requires H3 index workaround (82s with H3)
+
+### Production GIS: **PostGIS**
+- **6.6s - 241s** for all queries
+- Most complete spatial SQL implementation
+- Best choice for complex operations
 
 ---
 
-## Complete Benchmark Results
+## Dataset
 
-| Query | SedonaDB (Parquet) | DuckDB (Parquet) | PostGIS (Parquet) | PostGIS (GeoJSON) | DuckDB (GeoJSON) |
-|-------|-------|---------|---------|---------|---------|
-| **Spatial Join** | **0.149s** | **0.605s** | 5.44s | 12.67s | 29.62s |
-| **Distance Within** | **0.820s** | **0.521s** | 16.25s | 16.53s | 31.82s |
-| **Area Weighted** | **2.500s** | 5.330s | 27.61s | 27.67s | 72.86s |
-| **KNN (5 nearest)** | **0.770s** | **44-48s (H3)** | 44.27s | 44.39s | OOM |
+NYC Open Data: **1.2M building footprints** (polygons), **109K fire hydrants** (points), **312 neighborhoods** (polygons), and **16K census blocks** (polygons). Total ~1.4M geometries representing real-world urban spatial data.
+
+## Queries
+
+- **Q1 - Spatial Join**: Count how many buildings fall within each neighborhood polygon.
+- **Q2 - Distance Within**: Find all building-hydrant pairs within 200 meters of each other.
+- **Q3 - Area Interpolation**: Estimate building population by weighting census block overlap areas.
+- **Q4 - KNN**: Find the 5 nearest hydrants to each of the 1.2M buildings.
+
+| Query | HeavyDB (GPU) | SedonaDB | DuckDB (Parquet) | PostGIS |
+|-------|---------------|----------|------------------|---------|
+| **Q1: Spatial Join** | **0.166s** | 0.220s | 1.105s | 6.639s |
+| **Q2: Distance Within** | **0.438s** | 1.353s | 0.915s | 20.362s |
+| **Q3: Area Weighted** | **0.259s** | 6.668s | 9.729s | 241.587s |
+| **Q4: KNN (5 nearest)** | **0.537s** | 1.724s | 82.415s (H3) | 57.401s |
 
 ---
 
 ## Key Discoveries
 
-### 1. DuckDB Parquet Works - But Requires Pre-loading!
-- **Direct Parquet read**: Hangs on GROUP BY spatial operations
-- **Pre-loaded tables**: **49-61x faster** than GeoJSON!
-- Query 2 (Distance): **0.521s** - fastest of all databases!
-- **Critical**: Must use `CREATE TABLE AS SELECT * FROM read_parquet()`
+### 1. HeavyDB GPU Acceleration Requires Grid-Based Equijoin
 
-### 2. PostGIS Benefits from Parquet Too!
-- **2.3x faster** on spatial joins (12.67s → 5.44s)
-- Still works perfectly with GeoJSON
-- Parquet is optional optimization, not requirement
+HeavyDB crashes on pure spatial joins without an equality condition. The solution:
 
-### 3. SedonaDB Requires Parquet Infrastructure
-- Direct GeoJSON loading: **>47GB RAM, >2 hours** (failed)
-- Parquet loading: **~7GB RAM, <30 seconds** (success)
-- Worth it for 20-57x speedup if you have data pipeline
+```sql
+-- Add grid columns for hash join
+ALTER TABLE buildings ADD COLUMN grid_x INT;
+ALTER TABLE buildings ADD COLUMN grid_y INT;
+UPDATE buildings SET
+    grid_x = CAST(FLOOR(ST_X(geom) * 100) AS INT),
+    grid_y = CAST(FLOOR(ST_Y(geom) * 100) AS INT);
 
-### 4. DuckDB KNN Solution: H3 Spatial Index Works!
-- **Native KNN operator missing**, but H3 provides excellent alternative
-- **H3 hexagonal index + spatial bounds filtering**: ~44-48s (matches PostGIS!)
-- **307x reduction** in comparisons (441M vs 135B naive approach)
-- **99.986% complete** results (154/1.08M buildings with < 5 hydrants)
-- Strategy: Combine H3 cells (k-ring=2) with 800m distance bounds
-- **Proof**: DuckDB can match specialized databases with proper spatial indexing
+-- Query pattern (required for GPU acceleration)
+SELECT ... FROM buildings b
+JOIN hydrants h ON b.grid_x = h.grid_x AND b.grid_y = h.grid_y
+               AND ST_DWITHIN(h.geom, b.geom, 0.0017)
+```
 
----
+### 2. DuckDB ST_Transform Axis Order Bug
 
-## Article Validation
+DuckDB spatial extension has an axis order issue (GitHub #474). Without the fix, coordinates are swapped:
 
-**✅ Article claims VALIDATED**
+```sql
+-- WRONG (axes swapped)
+ST_Transform(geometry, 'EPSG:4326', 'EPSG:3857')
 
-Our results match or exceed the article's findings:
-- SedonaDB: 0.149s vs article 0.24s (even faster!)
-- PostGIS: 5-44s vs article 6-83s (similar range)
-- DuckDB: Confirmed KNN limitation (article reported OOM)
+-- CORRECT (use always_xy parameter)
+ST_Transform(geometry, 'EPSG:4326', 'EPSG:3857', always_xy := true)
+```
 
-**New insight not in article**: PostGIS gets significant speedup from Parquet!
+### 3. Fair Comparison Validation
+
+All databases now produce equivalent results for Q2 (200m distance):
+
+| Database | Result Count | Notes |
+|----------|--------------|-------|
+| PostGIS | 17,061,933 pairs | Reference (EPSG:3857) |
+| SedonaDB | 17,061,933 pairs | Matches PostGIS |
+| DuckDB | 17,061,933 pairs | With `always_xy := true` fix |
+| HeavyDB | 17,153,441 pairs | +0.5% (degree-based threshold) |
+
+### 4. DuckDB KNN Solution: H3 Spatial Index
+
+DuckDB lacks native KNN operator but H3 hexagonal index provides a workaround:
+- **H3 k-ring filtering** reduces comparisons from 135B to 441M (307x reduction)
+- **82s performance** on full dataset (vs PostGIS 57s)
+- **99.986% complete** results
 
 ---
 
 ## Recommendations
 
-### Use **SedonaDB** when:
-✅ You need **absolute best performance** (0.15s - 2.5s)
-✅ You have **Parquet data pipeline**
-✅ You're doing **KNN queries**
-✅ Performance justifies infrastructure cost
-
-### Use **DuckDB with Parquet + H3** when:
-✅ You want **fast analytics** without full database setup (0.52s - 5.3s)
-✅ You can **pre-load Parquet into tables** (simple one-liner)
-✅ You're doing **spatial joins, distance, or KNN** queries
-✅ You're doing **analytics** not transactional work
-✅ **KNN with H3 index**: Matches PostGIS performance (44-48s)
-⚠️ **Critical**: Load data first with `CREATE TABLE AS SELECT * FROM read_parquet()`
-⚠️ **KNN requires**: H3 community extension + spatial bounds filtering
-
-### Use **PostGIS** when:
-✅ You want **reliability** and **ease of use**
-✅ **5-44 second queries** are acceptable
-✅ You need **standard database** features
-✅ You need **multi-user** concurrent access
-✅ You need **any query type** including KNN
-💡 **Bonus**: Use Parquet for 2.3x speedup on joins!
-
-### Avoid **DuckDB with GeoJSON** for:
-❌ Large datasets (2-3x slower than PostGIS)
-❌ Complex queries (OOM errors)
+| Use Case | Recommended Database |
+|----------|---------------------|
+| Maximum performance (GPU available) | HeavyDB with grid equijoin |
+| Large-scale analytics (no GPU) | SedonaDB |
+| Data lake / ETL workflows | DuckDB (Parquet native) |
+| Production GIS application | PostGIS |
+| Complex spatial SQL | PostGIS or SedonaDB |
+| KNN on full dataset (no GPU) | SedonaDB |
 
 ---
 
@@ -114,157 +118,140 @@ Our results match or exceed the article's findings:
 ```
 bench_geo_db/
 ├── src/
-│   ├── benchmarks/          # Benchmark scripts (refactored with functions)
+│   ├── benchmarks/
 │   │   ├── benchmark_postgis.py
 │   │   ├── benchmark_postgis_parquet.py
 │   │   ├── benchmark_duckdb.py
 │   │   ├── benchmark_duckdb_parquet.py
-│   │   ├── benchmark_duckdb_knn_h3.py    # DuckDB KNN with H3 spatial index
+│   │   ├── benchmark_duckdb_knn_h3.py
 │   │   ├── benchmark_sedona.py
-│   │   └── benchmark_sedona_parquet.py
-│   └── utils/               # Utility scripts
+│   │   ├── benchmark_sedona_parquet.py
+│   │   ├── benchmark_heavydb_working.py      # HeavyDB with grid equijoin
+│   │   └── benchmark_fair_comparison.py      # Cross-database validation
+│   └── utils/
 │       ├── convert_to_parquet.py
-│       └── load_parquet_to_postgis.py
-├── docs/                    # Documentation
-│   ├── FINAL_RESULTS.md
-│   └── QUERY_COMPARABILITY.md
+│       ├── load_parquet_to_postgis.py
+│       └── load_parquet_to_heavydb.py
 ├── data/                    # Data files (not in repo)
-│   ├── *.geojson           # Original NYC Open Data (933MB)
-│   └── *.parquet           # Optimized format (207MB)
-├── docker-compose.yml       # PostGIS Docker setup
-├── prepare_postgis.sql      # PostGIS initialization
-├── LICENSE                  # MIT License
-└── README.md               # This file
+│   ├── *.geojson           # Original NYC Open Data
+│   └── *.parquet           # Optimized format
+├── docker-compose.yml
+├── BENCHMARK_RESULTS.txt    # Full benchmark results
+└── README.md
 ```
-
-### Key Files
-
-**Benchmarks** (`src/benchmarks/`):
-- `benchmark_postgis_parquet.py` - PostGIS with Parquet (5.44s - 44.27s) ⚡ **Recommended**
-- `benchmark_duckdb_parquet.py` - DuckDB with Parquet (0.521s - 5.33s) ⚡⚡ **Fast!**
-- `benchmark_duckdb_knn_h3.py` - DuckDB KNN with H3 (44-48s) ⚡ **Matches PostGIS!**
-- `benchmark_sedona_parquet.py` - SedonaDB with Parquet (0.149s - 2.5s) ⚡⚡⚡ **Fastest**
-- `benchmark_postgis.py` - PostGIS with GeoJSON (12.67s - 44.39s)
-- `benchmark_duckdb.py` - DuckDB with GeoJSON (29.62s - 73s + OOM)
-- `benchmark_sedona.py` - SedonaDB with GeoJSON (failed - OOM)
-
-**Utilities** (`src/utils/`):
-- `convert_to_parquet.py` - Convert GeoJSON → Parquet (78% smaller)
-- `load_parquet_to_postgis.py` - Load Parquet into PostGIS with indexes
-
----
-
-## Methodology
-
-- **Single-run measurements**: Each query timed once with Python's `time.time()`
-- **Query times only**: Pre-loading (DuckDB: 0.779s), indexing, and conversion excluded
-- **No cache control**: Tests run in sequence reflecting real-world mixed cache states
-- **Important**: DuckDB KNN not viable on full dataset - lacks KNN operator
-- See `FINAL_RESULTS.md` and `QUERY_COMPARABILITY.md` for detailed analysis
-
-## Environment
-
-- **Date**: November 7, 2025
-- **System**: Linux 6.17.5-1-liquorix-amd64
-- **Python**: 3.13.5
-- **PostGIS**: kartoza/postgis:17-3.5 (PostgreSQL 17, PostGIS 3.5)
-- **DuckDB**: 1.4.1 with spatial extension
-- **SedonaDB**: 0.1.0 (apache-sedona 1.8.0)
-
----
-
-## Dataset (NYC Open Data)
-
-- **Building Footprints**: 1,238,423 buildings
-- **Fire Hydrants**: 109,335 hydrants
-- **Neighborhoods**: 312 neighborhoods
-- **Census Blocks**: 16,070 census blocks
 
 ---
 
 ## Setup Instructions
 
-### 1. Setup Environment
+### 1. Environment Setup
+
 ```bash
-# Create virtual environment
 python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# .venv\Scripts\activate  # Windows
+source .venv/bin/activate
 
-# Install dependencies
-pip install geopandas duckdb psycopg2-binary sqlalchemy apache-sedona[db]
+pip install geopandas duckdb psycopg2-binary sqlalchemy apache-sedona[db] heavyai
 ```
 
-### 2. Download Data
-```bash
-# Create data directory
-mkdir -p data
+### 2. Convert Data to Parquet
 
-# Download NYC Open Data (see article for URLs)
-# - Building_Footprints.geojson
-# - NYCDEPCitywideHydrants.geojson
-# - nyc_hoods.geojson
-# - nys_census_blocks.geojson
-```
-
-### 3. Convert to Parquet (Recommended)
 ```bash
 python src/utils/convert_to_parquet.py
-# Converts GeoJSON → Parquet (78% smaller, 240x faster loading)
 ```
 
-### 4. Start PostGIS
+### 3. Database Setup
+
+**PostGIS**
 ```bash
 docker run --name bench_postgis -d \
   -e POSTGRES_PASSWORD=postgres \
   -p 5432:5432 \
   postgis/postgis:17-3.5
+
+python src/utils/load_parquet_to_postgis.py
 ```
 
-### 5. Run Benchmarks
-
-**PostGIS (Parquet - Recommended)**
+**HeavyDB (GPU)**
 ```bash
-python src/utils/load_parquet_to_postgis.py  # Load data + create indexes
+docker run --name heavydb --gpus all -d \
+  -p 6274:6274 -p 6278:6278 \
+  -v heavyai-storage:/var/lib/heavyai \
+  heavyai/heavydb-ee:latest
+
+python src/utils/load_parquet_to_heavydb.py
+```
+
+### 4. Run Benchmarks
+
+```bash
+# PostGIS
 python src/benchmarks/benchmark_postgis_parquet.py
-```
 
-**SedonaDB (Parquet Only)**
-```bash
-python src/benchmarks/benchmark_sedona_parquet.py
-```
-
-**DuckDB (Parquet - Fast!)**
-```bash
+# DuckDB
 python src/benchmarks/benchmark_duckdb_parquet.py
-```
 
-**DuckDB KNN with H3 (Matches PostGIS)**
-```bash
+# DuckDB KNN with H3
 python src/benchmarks/benchmark_duckdb_knn_h3.py
-# Requires H3 community extension (auto-installed)
-# Uses H3 hexagonal index + spatial bounds filtering
-# Performance: 44-48s (matches PostGIS 44.27s)
+
+# SedonaDB
+python src/benchmarks/benchmark_sedona_parquet.py
+
+# HeavyDB (GPU)
+python src/benchmarks/benchmark_heavydb_working.py
+
+# Fair comparison validation
+python src/benchmarks/benchmark_fair_comparison.py
 ```
 
-**GeoJSON (Optional - Slower)**
-```bash
-python src/benchmarks/benchmark_postgis.py  # Requires ogr2ogr to load data first
-python src/benchmarks/benchmark_duckdb.py
-```
+---
+
+## Hardware
+
+- **Machine**: SILAP-76
+- **GPU**: NVIDIA RTX 2000 Ada Generation Laptop GPU (8GB VRAM)
+- **RAM**: 20GB limit for tests
+- **Platform**: Linux 6.14.0-35-generic
+
+---
+
+## Technology Notes
+
+### PostGIS
+- Most mature and complete spatial SQL implementation
+- GIST indexes provide reasonable performance
+- Best choice for complex spatial operations and production use
+
+### DuckDB
+- Excellent analytical performance with columnar storage
+- Parquet-native for data lake integration
+- **Bug**: ST_Transform requires `always_xy := true` (GitHub #474)
+- KNN requires H3 spatial indexing workaround
+
+### SedonaDB (Apache Sedona)
+- Spark-based distributed spatial analytics
+- Excellent native ST_KNN support
+- No GPU requirement
+- Ideal for big data spatial processing
+
+### HeavyDB (GPU-Accelerated)
+- **Fastest overall** when properly configured
+- **Requires**: Grid-based equijoin + ST_DWITHIN pattern
+- **Without equijoin**: HeavyDB crashes on spatial joins
+- Grid cells at 0.01° (~1km) for hash join optimization
 
 ---
 
 ## Bottom Line
 
-**Three viable options depending on your needs:**
+**Four viable options depending on your needs:**
 
-1. **SedonaDB with Parquet**: Absolute fastest (0.15s - 2.5s), requires pipeline
-2. **DuckDB with Parquet + H3**: Very fast (0.52s - 5.3s), **KNN now works** (44-48s), simple setup
-3. **PostGIS with Parquet**: Fast enough (5.4s - 44s), most reliable, works with anything
+1. **HeavyDB (GPU)**: Absolute fastest (0.17s - 0.54s), requires GPU + grid technique
+2. **SedonaDB**: Best without GPU (0.22s - 6.7s), excellent KNN support
+3. **DuckDB**: Fast analytics (0.9s - 9.7s), Parquet-native, H3 for KNN
+4. **PostGIS**: Most reliable (6.6s - 241s), production-ready, works with anything
 
-**Key insight**: DuckDB is actually competitive when used correctly! Pre-loading Parquet into tables makes it **31-61x faster** than GeoJSON, even beating PostGIS on distance queries. **New discovery**: H3 spatial index enables DuckDB KNN queries that match PostGIS performance!
+**Key insight**: HeavyDB GPU acceleration delivers 40-930x speedup over PostGIS, but requires the grid-based equijoin technique. Without it, queries crash.
 
 ---
 
-**Status**: ✅ Complete - All benchmarks run, DuckDB KNN solution implemented with H3, code refactored
+**Status**: Complete - All benchmarks run, fair comparison validated, DuckDB axis bug fixed
