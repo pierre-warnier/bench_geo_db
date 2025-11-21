@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: gis
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgis_data:/var/lib/postgresql/data
     healthcheck:
@@ -52,6 +52,31 @@ services:
       timeout: 10s
       retries: 5
 
+  heavydb-cpu:
+    image: heavyai/core-os-cpu
+    container_name: bench_heavydb_cpu
+    ports:
+      - "6275:6274"  # Thrift binary protocol (different port than GPU)
+      - "6272:6273"  # Thrift HTTP protocol
+      - "9093:9092"  # Web UI
+    volumes:
+      - heavydb_cpu_data:/var/lib/heavyai
+      - heavydb_cpu_data:/heavyai-storage
+    command: |
+      /bin/bash -c "
+      /heavyai/startheaveai \
+        --non-interactive \
+        --data /heavyai-storage/data \
+        --config /heavyai-storage/heavyai.conf \
+        --enable-runtime-udf
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6273/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
 volumes:
   postgis_data:
   heavydb_data:
+  heavydb_cpu_data:

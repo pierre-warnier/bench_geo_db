@@ -2,7 +2,7 @@
 
 Complete replication and extension of the benchmark from https://forrest.nyc/sedonadb-vs-duckdb-vs-postgis-which-spatial-sql-engine-is-fastest/
 
-**Extended with GPU-accelerated HeavyDB benchmarks**
+**Extended with GPU-accelerated HeavyDB benchmarks + CPU comparison**
 
 ## Quick Results Summary
 
@@ -10,6 +10,11 @@ Complete replication and extension of the benchmark from https://forrest.nyc/sed
 - **0.166s - 0.537s** for all queries
 - **40-930x faster** than PostGIS
 - Requires NVIDIA GPU + grid-based equijoin technique
+
+### HeavyDB CPU (No GPU)
+- **0.074s - 2.24s** for all queries
+- **4-5x slower** than GPU version on distance queries
+- Still competitive with SedonaDB
 
 ### Best Without GPU: **SedonaDB** (with Parquet)
 - **0.220s - 6.7s** for all queries
@@ -39,12 +44,14 @@ NYC Open Data: **1.2M building footprints** (polygons), **109K fire hydrants** (
 - **Q3 - Area Interpolation**: Estimate building population by weighting census block overlap areas.
 - **Q4 - KNN**: Find the 5 nearest hydrants to each of the 1.2M buildings.
 
-| Query | HeavyDB (GPU) | SedonaDB | DuckDB (Parquet) | PostGIS |
-|-------|---------------|----------|------------------|---------|
-| **Q1: Spatial Join** | **0.166s** | 0.220s | 1.105s | 6.639s |
-| **Q2: Distance Within** | **0.438s** | 1.353s | 0.915s | 20.362s |
-| **Q3: Area Weighted** | **0.259s** | 6.668s | 9.729s | 241.587s |
-| **Q4: KNN (5 nearest)** | **0.537s** | 1.724s | 82.415s (H3) | 57.401s |
+| Query | HeavyDB (GPU) | HeavyDB (CPU) | SedonaDB | DuckDB (Parquet) | PostGIS |
+|-------|---------------|---------------|----------|------------------|---------|
+| **Q1: Spatial Join** | **0.166s** | 0.074s | 0.220s | 1.105s | 6.639s |
+| **Q2: Distance Within** | **0.438s** | 2.240s | 1.353s | 0.915s | 20.362s |
+| **Q3: Area Weighted** | **0.259s** | 0.172s | 6.668s | 9.729s | 241.587s |
+| **Q4: KNN (5 nearest)** | **0.537s** | 0.411s | 1.724s | 82.415s (H3) | 57.401s |
+
+*Note: HeavyDB CPU/GPU use grid-based equijoin technique (different from pure spatial join)*
 
 ---
 
@@ -104,12 +111,13 @@ DuckDB lacks native KNN operator but H3 hexagonal index provides a workaround:
 
 | Use Case | Recommended Database |
 |----------|---------------------|
-| Maximum performance (GPU available) | HeavyDB with grid equijoin |
-| Large-scale analytics (no GPU) | SedonaDB |
+| Maximum performance (GPU available) | HeavyDB GPU with grid equijoin |
+| Fast analytics (no GPU) | HeavyDB CPU or SedonaDB |
+| Large-scale distributed analytics | SedonaDB |
 | Data lake / ETL workflows | DuckDB (Parquet native) |
 | Production GIS application | PostGIS |
 | Complex spatial SQL | PostGIS or SedonaDB |
-| KNN on full dataset (no GPU) | SedonaDB |
+| KNN on full dataset (no GPU) | SedonaDB or HeavyDB CPU |
 
 ---
 
@@ -126,12 +134,14 @@ bench_geo_db/
 │   │   ├── benchmark_duckdb_knn_h3.py
 │   │   ├── benchmark_sedona.py
 │   │   ├── benchmark_sedona_parquet.py
-│   │   ├── benchmark_heavydb_working.py      # HeavyDB with grid equijoin
+│   │   ├── benchmark_heavydb_working.py      # HeavyDB GPU with grid equijoin
+│   │   ├── benchmark_heavydb_cpu.py          # HeavyDB CPU-only
 │   │   └── benchmark_fair_comparison.py      # Cross-database validation
 │   └── utils/
 │       ├── convert_to_parquet.py
 │       ├── load_parquet_to_postgis.py
-│       └── load_parquet_to_heavydb.py
+│       ├── load_parquet_to_heavydb.py
+│       └── load_parquet_to_heavydb_cpu.py
 ├── data/                    # Data files (not in repo)
 │   ├── *.geojson           # Original NYC Open Data
 │   └── *.parquet           # Optimized format
@@ -181,6 +191,15 @@ docker run --name heavydb --gpus all -d \
 python src/utils/load_parquet_to_heavydb.py
 ```
 
+**HeavyDB (CPU only)**
+```bash
+docker run --name bench_heavydb_cpu -d \
+  -p 6275:6274 -p 6272:6273 -p 9093:9092 \
+  heavyai/core-os-cpu
+
+python src/utils/load_parquet_to_heavydb_cpu.py
+```
+
 ### 4. Run Benchmarks
 
 ```bash
@@ -198,6 +217,9 @@ python src/benchmarks/benchmark_sedona_parquet.py
 
 # HeavyDB (GPU)
 python src/benchmarks/benchmark_heavydb_working.py
+
+# HeavyDB (CPU)
+python src/benchmarks/benchmark_heavydb_cpu.py
 
 # Fair comparison validation
 python src/benchmarks/benchmark_fair_comparison.py
@@ -243,15 +265,16 @@ python src/benchmarks/benchmark_fair_comparison.py
 
 ## Bottom Line
 
-**Four viable options depending on your needs:**
+**Five viable options depending on your needs:**
 
 1. **HeavyDB (GPU)**: Absolute fastest (0.17s - 0.54s), requires GPU + grid technique
-2. **SedonaDB**: Best without GPU (0.22s - 6.7s), excellent KNN support
-3. **DuckDB**: Fast analytics (0.9s - 9.7s), Parquet-native, H3 for KNN
-4. **PostGIS**: Most reliable (6.6s - 241s), production-ready, works with anything
+2. **HeavyDB (CPU)**: Fast without GPU (0.07s - 2.24s), grid technique still required
+3. **SedonaDB**: Distributed processing (0.22s - 6.7s), excellent native KNN support
+4. **DuckDB**: Fast analytics (0.9s - 9.7s), Parquet-native, H3 for KNN
+5. **PostGIS**: Most reliable (6.6s - 241s), production-ready, works with anything
 
-**Key insight**: HeavyDB GPU acceleration delivers 40-930x speedup over PostGIS, but requires the grid-based equijoin technique. Without it, queries crash.
+**Key insight**: HeavyDB delivers excellent performance with or without GPU, but requires the grid-based equijoin technique. GPU version is ~5x faster on distance-heavy queries, but CPU is still competitive.
 
 ---
 
-**Status**: Complete - All benchmarks run, fair comparison validated, DuckDB axis bug fixed
+**Status**: Complete - All benchmarks run, fair comparison validated, HeavyDB CPU added
